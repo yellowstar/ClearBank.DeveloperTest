@@ -2,11 +2,16 @@
 
 namespace ClearBank.DeveloperTest.Data
 {
-    public class AccountDataStore
+    public class AccountDataStore : IAccountDataStore
     {
+        public DataStoreType DataStoreType
+        {
+            get { return DataStoreType.Main; }
+        }
+
         public Account GetAccount(string accountNumber)
         {
-            // Access database to retrieve account, code removed for brevity 
+            // Access database to retrieve account, code removed for brevity
             return new Account();
         }
 

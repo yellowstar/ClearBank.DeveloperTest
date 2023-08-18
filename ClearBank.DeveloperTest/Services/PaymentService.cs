@@ -1,88 +1,59 @@
 ﻿using ClearBank.DeveloperTest.Data;
 using ClearBank.DeveloperTest.Types;
-using System.Configuration;
+using ClearBank.DeveloperTest.Configuration;
+using ClearBank.DeveloperTest.PaymentSchemeHandlers;
+using System.Collections.Generic;
+using System.Linq;
+using System;
 
 namespace ClearBank.DeveloperTest.Services
 {
     public class PaymentService : IPaymentService
     {
+        private readonly IEnumerable<IAccountDataStore> _accountDataStores;
+        private readonly IEnumerable<IPaymentSchemeHandler> _paymentSchemeHandlers;
+        private readonly IConfigurationSettings _configurationSettings;
+
+        public PaymentService(IEnumerable<IAccountDataStore> accountDataStores, IEnumerable<IPaymentSchemeHandler> paymentSchemeHandlers, IConfigurationSettings configurationSettings)
+        {
+            _accountDataStores = accountDataStores;
+            _configurationSettings = configurationSettings;
+            _paymentSchemeHandlers = paymentSchemeHandlers;
+        }
+
         public MakePaymentResult MakePayment(MakePaymentRequest request)
         {
-            var dataStoreType = ConfigurationManager.AppSettings["DataStoreType"];
+            var result = new MakePaymentResult() { Success = true };
+            DataStoreType dataStoreType = Enum.TryParse<DataStoreType>(_configurationSettings.DataStoreType, true, out dataStoreType) ? dataStoreType : DataStoreType.Unknown;
 
-            Account account = null;
+            var accountDataStore = _accountDataStores.FirstOrDefault(s => s.DataStoreType == dataStoreType);
 
-            if (dataStoreType == "Backup")
+            if (accountDataStore == null)
             {
-                var accountDataStore = new BackupAccountDataStore();
-                account = accountDataStore.GetAccount(request.DebtorAccountNumber);
-            }
-            else
-            {
-                var accountDataStore = new AccountDataStore();
-                account = accountDataStore.GetAccount(request.DebtorAccountNumber);
+                result.Success = false;
+                return result;
             }
 
-            var result = new MakePaymentResult();
+            Account debtorAccount = accountDataStore.GetAccount(request.DebtorAccountNumber);
+            Account creditorAccount = accountDataStore.GetAccount(request.CreditorAccountNumber);
 
-            switch (request.PaymentScheme)
+            if (debtorAccount == null || creditorAccount == null)
             {
-                case PaymentScheme.Bacs:
-                    if (account == null)
-                    {
-                        result.Success = false;
-                    }
-                    else if (!account.AllowedPaymentSchemes.HasFlag(AllowedPaymentSchemes.Bacs))
-                    {
-                        result.Success = false;
-                    }
-                    break;
-
-                case PaymentScheme.FasterPayments:
-                    if (account == null)
-                    {
-                        result.Success = false;
-                    }
-                    else if (!account.AllowedPaymentSchemes.HasFlag(AllowedPaymentSchemes.FasterPayments))
-                    {
-                        result.Success = false;
-                    }
-                    else if (account.Balance < request.Amount)
-                    {
-                        result.Success = false;
-                    }
-                    break;
-
-                case PaymentScheme.Chaps:
-                    if (account == null)
-                    {
-                        result.Success = false;
-                    }
-                    else if (!account.AllowedPaymentSchemes.HasFlag(AllowedPaymentSchemes.Chaps))
-                    {
-                        result.Success = false;
-                    }
-                    else if (account.Status != AccountStatus.Live)
-                    {
-                        result.Success = false;
-                    }
-                    break;
+                result.Success = false;
+                return result;
             }
+
+            var paymentSchemeHandler = _paymentSchemeHandlers.FirstOrDefault(h => h.SupportedScheme == request.PaymentScheme);
+            result.Success = paymentSchemeHandler.AccountSupported(debtorAccount) && paymentSchemeHandler.CreditCheck(debtorAccount, request.Amount);
 
             if (result.Success)
             {
-                account.Balance -= request.Amount;
+                // Should be wrapped in an atomic transaction
+                debtorAccount.Balance -= request.Amount;
+                accountDataStore.UpdateAccount(debtorAccount);
 
-                if (dataStoreType == "Backup")
-                {
-                    var accountDataStore = new BackupAccountDataStore();
-                    accountDataStore.UpdateAccount(account);
-                }
-                else
-                {
-                    var accountDataStore = new AccountDataStore();
-                    accountDataStore.UpdateAccount(account);
-                }
+                creditorAccount.Balance += request.Amount;
+                accountDataStore.UpdateAccount(creditorAccount);
             }
 
             return result;
